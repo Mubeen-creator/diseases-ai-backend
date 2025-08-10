@@ -1,0 +1,21 @@
+[project]
+name = "healtcare-backend"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.13.4",
+    "fastapi>=0.116.1",
+    "itsdangerous>=2.2.0",
+    "langchain>=0.3.27",
+    "langchain-google-genai>=2.1.9",
+    "langchain-openai>=0.3.29",
+    "langgraph==0.3.1",
+    "lxml>=6.0.0",
+    "pubmed>=0.0.2.post0",
+    "pubmed-lookup>=0.2.3",
+    "pymed>=0.8.9",
+    "python-dotenv>=1.1.1",
+    "uvicorn>=0.35.0",
+]

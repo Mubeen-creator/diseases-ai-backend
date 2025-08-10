@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+langchain
+langgraph
+langchain-openai
+langchain-google-genai
+python-dotenv
+beautifulsoup4
+pymed
+lxml
