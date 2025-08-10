@@ -7,6 +7,8 @@ requires-python = ">=3.12"
 dependencies = [
     "beautifulsoup4>=4.13.4",
     "fastapi>=0.116.1",
+    "firebase>=4.0.1",
+    "firebase-admin>=7.1.0",
     "itsdangerous>=2.2.0",
     "langchain>=0.3.27",
     "langchain-google-genai>=2.1.9",
