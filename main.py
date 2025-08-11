@@ -5,20 +5,19 @@ from langchain_core.messages import HumanMessage, AIMessage
 from dotenv import load_dotenv
 import logging
 from datetime import datetime, timezone, timedelta
+import uuid
 from firebase_admin import firestore as fs
 from firebase import db
 from utils import hash_password, verify_password, create_access_token, get_current_user
 from pydantic_validations import AskRequest, SignUpRequest, LoginRequest, TokenResponse
 from tools import call_model, AgentState, router
 from typing import List, Dict
-
-
+from pydantic import BaseModel, EmailStr, Field
+from typing import Optional
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 load_dotenv()
-
-
 
 # --- FastAPI App & Endpoints ---
 app = FastAPI(
@@ -42,8 +41,14 @@ workflow.add_conditional_edges(
 )
 app_graph = workflow.compile()
 
+class AskRequest(BaseModel):
+    query: str
+    session_id: Optional[str] = Field(None, description="Existing session id; omit to start a new session")
+
 @app.post("/ask")
 async def ask(request: AskRequest, http_request: Request, current_user=Depends(get_current_user)):
+    # Session management
+    session_id = request.session_id or str(uuid.uuid4())
     chat_history_list = http_request.session.get("chat_history", [])
     
     messages = []
@@ -62,21 +67,41 @@ async def ask(request: AskRequest, http_request: Request, current_user=Depends(g
         final_state = app_graph.invoke(inputs, {"recursion_limit": 15})
         answer = final_state['messages'][-1].content
         try:
-            user_queries = db.collection("Queries").document(current_user["id"]).collection("items")
+            session_doc_ref = (
+                db.collection("Sessions")
+                .document(current_user["id"])
+                .collection("sessions")
+                .document(session_id)
+            )
+            # Ensure a session document exists with metadata
+            session_doc_ref.set({"created": fs.SERVER_TIMESTAMP, "last_activity": fs.SERVER_TIMESTAMP}, merge=True)
+
+            user_queries = session_doc_ref.collection("messages")
             user_queries.add({
                 "query": request.query,
                 "answer": answer,
                 "timestamp": fs.SERVER_TIMESTAMP,
+                "role": "user",  # could be user/assistant
+
             })
         except Exception as firestore_err:
             logger.error(f"Failed to save query to Firestore: {firestore_err}")
 
         messages.append(AIMessage(content=answer))
+        # save assistant message too
+        user_queries.add({
+                "query": request.query,
+                "answer": answer,
+                "timestamp": fs.SERVER_TIMESTAMP,
+                "role": "assistant",
+            })
+        # update last activity on session doc
+        session_doc_ref.update({"last_activity": fs.SERVER_TIMESTAMP})
         
         http_request.session["chat_history"] = [{"type": m.type, "content": m.content} for m in messages]
 
         logger.info(f"Generated answer: {answer}")
-        return {"answer": answer}
+        return {"answer": answer, "session_id": session_id}
     except Exception as e:
         logger.error(f"Error during agent execution: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -148,6 +173,29 @@ def _group_queries_by_day(docs) -> Dict[str, List[Dict]]:
     return grouped
 
 
+@app.get("/sessions", response_model=List[Dict])
+async def list_sessions(current_user=Depends(get_current_user)):
+    """List all sessions for the user with last activity timestamp."""
+    sessions_ref = (
+        db.collection("Sessions")
+        .document(current_user["id"])  # user bucket
+        .collection("sessions")
+    )
+    sessions: List[Dict] = []
+    for doc_ref in sessions_ref.list_documents():
+        doc = doc_ref.get()
+        data = doc.to_dict() or {}
+        last_ts = data.get("last_activity")
+        if isinstance(last_ts, datetime):
+            last_ts = last_ts.astimezone(timezone.utc).isoformat()
+        elif last_ts is not None:
+            last_ts = getattr(last_ts, "to_datetime", lambda: last_ts)().astimezone(timezone.utc).isoformat()
+        sessions.append({"session_id": doc.id.split("/")[-1], "last_activity": last_ts})
+    return sessions
+
+
+# Query history endpoints grouped by day (legacy)
+
 @app.get("/queries", response_model=Dict[str, List[Dict]])
 async def get_all_queries(current_user=Depends(get_current_user)):
     """Return all queries for the authenticated user grouped by day."""
@@ -160,6 +208,31 @@ async def get_all_queries(current_user=Depends(get_current_user)):
     )
     return _group_queries_by_day(docs)
 
+
+# Fetch messages of a session
+
+@app.get("/sessions/{session_id}", response_model=List[Dict])
+async def get_session_messages(session_id: str, current_user=Depends(get_current_user)):
+    coll = (
+        db.collection("Sessions")
+        .document(current_user["id"])
+        .collection("sessions")
+        .document(session_id)
+        .collection("messages")
+        .order_by("timestamp", direction=fs.Query.ASCENDING)
+    )
+    msgs: List[Dict] = []
+    for doc in coll.stream():
+        d = doc.to_dict()
+        ts = d.get("timestamp")
+        if ts is not None:
+            if isinstance(ts, datetime):
+                dt = ts.astimezone(timezone.utc)
+            else:
+                dt = getattr(ts, "to_datetime", lambda: ts)().astimezone(timezone.utc)
+            d["timestamp"] = dt.isoformat()
+        msgs.append(d)
+    return msgs
 
 @app.get("/queries/{date_str}", response_model=List[Dict])
 async def get_queries_by_date(date_str: str, current_user=Depends(get_current_user)):
