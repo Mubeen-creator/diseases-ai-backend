@@ -13,3 +13,7 @@ wheels/
 .env
 .env.example
 .env.local
+
+# Firebase
+serviceAccountKey.json
+firebase-adminsdk-fbsvc@diseases-ai.iam.gserviceaccount.com

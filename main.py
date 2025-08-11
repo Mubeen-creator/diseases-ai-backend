@@ -1,7 +1,7 @@
 import os
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Depends
 from starlette.middleware.sessions import SessionMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.tools import tool
 from langgraph.graph import StateGraph, END
@@ -11,17 +11,17 @@ from langchain_core.messages import HumanMessage, BaseMessage, ToolMessage, AIMe
 from dotenv import load_dotenv
 from pymed import PubMed
 import logging
+from firebase import db
+from utils import hash_password, verify_password, create_access_token, get_current_user
 from langgraph.prebuilt import ToolNode
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 load_dotenv()
 
-# --- Agent State ---
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
 
-# --- Tools ---
 @tool
 def search_local_db(disease_name: str) -> str:
     """
@@ -37,13 +37,11 @@ def search_local_db(disease_name: str) -> str:
         disease_section = []
         found_disease = False
         for line in lines:
-            # A disease section starts with a number and colon, e.g., "1: disease_name"
             if not found_disease and line.strip().lower().endswith(disease_name.lower()):
                 found_disease = True
             
             if found_disease:
                 disease_section.append(line)
-                # A new section starts with a number, or the file ends
                 if len(disease_section) > 1 and line.strip() and line.strip()[0].isdigit() and not line.strip().lower().endswith(disease_name.lower()):
                     disease_section.pop() # The current line is the start of the next disease
                     break
@@ -96,18 +94,12 @@ def call_model(state: AgentState):
 
 def router(state: AgentState) -> str:
     """Routes the workflow based on the last message from a tool execution."""
-    # The tool_executor returns a list of ToolMessages, so we check the last one.
     last_message = state['messages'][-1]
     if isinstance(last_message, ToolMessage):
-        # If the local search tool failed to find the data, we re-route to the agent
-        # so it can decide to call the pubmed search tool.
         if "not found in the local data" in last_message.content:
             return "agent"
         else:
-            # Otherwise, the tool call was successful (or it was the pubmed tool),
-            # so we can end the chain and generate the final answer.
             return "end"
-    # This should not happen in this router, but as a fallback
     return "end"
 
 # --- FastAPI App & Endpoints ---
@@ -117,12 +109,8 @@ app = FastAPI(
     version="2.0.0",
 )
 
-# Add session middleware with a secret key
-# In a production environment, use a more secure, randomly generated key
-# and load it from environment variables.
 app.add_middleware(SessionMiddleware, secret_key="your-secret-key-goes-here")
 
-# --- Security & Configuration ---
 api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
     raise ValueError("GOOGLE_API_KEY is not set.")
@@ -144,22 +132,33 @@ workflow.add_conditional_edges(
     "tool_node",
     router,
     {
-        "agent": "agent", # Re-route to the agent to call the next tool
-        "end": END      # End the workflow to generate a final answer
+        "agent": "agent",
+        "end": END
     }
 )
 app_graph = workflow.compile()
+
+class SignUpRequest(BaseModel):
+    fullName: str
+    email: EmailStr
+    password: str
+    confirmPassword: str
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
 
 class AskRequest(BaseModel):
     query: str
 
 @app.post("/ask")
 async def ask(request: AskRequest, http_request: Request):
-    # SessionMiddleware handles JSON serialization/deserialization automatically.
-    # We get a Python list of dicts directly from the session.
     chat_history_list = http_request.session.get("chat_history", [])
     
-    # Deserialize the list of dicts into LangChain message objects.
     messages = []
     for msg in chat_history_list:
         if msg.get('type') == 'human':
@@ -169,20 +168,15 @@ async def ask(request: AskRequest, http_request: Request):
 
     logger.info(f"Received query: '{request.query}' with history length: {len(messages)}")
 
-    # Append the new user query to the message history.
     messages.append(HumanMessage(content=request.query))
 
-    # Invoke the graph with the full message history.
     inputs = {"messages": messages}
     try:
         final_state = app_graph.invoke(inputs, {"recursion_limit": 15})
         answer = final_state['messages'][-1].content
 
-        # Append the AI's response to the message history.
         messages.append(AIMessage(content=answer))
         
-        # The list of message objects needs to be serialized to a list of dicts
-        # before saving it back to the session.
         http_request.session["chat_history"] = [{"type": m.type, "content": m.content} for m in messages]
 
         logger.info(f"Generated answer: {answer}")
@@ -190,6 +184,50 @@ async def ask(request: AskRequest, http_request: Request):
     except Exception as e:
         logger.error(f"Error during agent execution: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/signup", response_model=TokenResponse)
+async def signup(body: SignUpRequest):
+    # Check passwords match
+    if body.password != body.confirmPassword:
+        raise HTTPException(status_code=400, detail="Passwords do not match")
+
+    users_ref = db.collection("users")
+    # Ensure unique email
+    existing = users_ref.where("email", "==", body.email).get()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
+
+    hashed_pw = hash_password(body.password)
+    user_doc = users_ref.document()
+    user_data = {
+        "id": user_doc.id,
+        "fullName": body.fullName,
+        "email": body.email,
+        "password": hashed_pw,
+    }
+    user_doc.set(user_data)
+
+    token = create_access_token({"id": user_doc.id, "fullName": body.fullName, "email": body.email})
+    return {"access_token": token}
+
+
+@app.post("/login", response_model=TokenResponse)
+async def login(body: LoginRequest):
+    users_ref = db.collection("users")
+    query = users_ref.where("email", "==", body.email).get()
+    if not query:
+        raise HTTPException(status_code=400, detail="Invalid credentials")
+
+    user = query[0].to_dict()
+    if not verify_password(body.password, user["password"]):
+        raise HTTPException(status_code=400, detail="Invalid credentials")
+
+    token = create_access_token({"id": user["id"], "fullName": user["fullName"], "email": user["email"]})
+    return {"access_token": token}
+
+@app.get("/me")
+async def me(current_user=Depends(get_current_user)):
+    return {"user": current_user}
 
 @app.get("/")
 async def root():

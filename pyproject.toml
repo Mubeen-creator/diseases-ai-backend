@@ -20,4 +20,7 @@ dependencies = [
     "pymed>=0.8.9",
     "python-dotenv>=1.1.1",
     "uvicorn>=0.35.0",
+    "passlib[bcrypt]>=1.7.4",
+    "python-jose>=3.3.0",
+    "pydantic[email]>=2.11.7",
 ]
