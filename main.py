@@ -11,7 +11,7 @@ from langchain_core.messages import HumanMessage, BaseMessage, ToolMessage, AIMe
 from dotenv import load_dotenv
 from pymed import PubMed
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from firebase_admin import firestore as fs
 from firebase import db
 from utils import hash_password, verify_password, create_access_token, get_current_user
@@ -241,6 +241,86 @@ async def login(body: LoginRequest):
 @app.get("/me")
 async def me(current_user=Depends(get_current_user)):
     return {"user": current_user}
+
+# ---------------------------------------------------------------------------
+# Query history endpoints
+# ---------------------------------------------------------------------------
+
+from typing import List, Dict
+
+
+def _group_queries_by_day(docs) -> Dict[str, List[Dict]]:
+    """Helper to group query docs by relative day string."""
+    today = datetime.now(timezone.utc).date()
+    grouped: Dict[str, List[Dict]] = {}
+    for doc in docs:
+        data = doc.to_dict()
+        ts = data.get("timestamp")
+        if ts is None:
+            continue
+        # `ts` may be a Firestore `DatetimeWithNanoseconds` which is already a `datetime` subclass.
+        if isinstance(ts, datetime):
+            dt = ts.astimezone(timezone.utc)
+        else:
+            # Fallback: try to call to_datetime if available
+            dt = getattr(ts, "to_datetime", lambda: ts)().astimezone(timezone.utc)
+        date_only = dt.date()
+        if date_only == today:
+            key = "today"
+        elif date_only == today - timedelta(days=1):
+            key = "yesterday"
+        else:
+            key = date_only.isoformat()
+        grouped.setdefault(key, []).append({"query": data["query"], "answer": data.get("answer"), "timestamp": dt.isoformat()})
+    return grouped
+
+
+@app.get("/queries", response_model=Dict[str, List[Dict]])
+async def get_all_queries(current_user=Depends(get_current_user)):
+    """Return all queries for the authenticated user grouped by day."""
+    docs = (
+        db.collection("Queries")
+        .document(current_user["id"])
+        .collection("items")
+        .order_by("timestamp", direction=fs.Query.DESCENDING)
+        .stream()
+    )
+    return _group_queries_by_day(docs)
+
+
+@app.get("/queries/{date_str}", response_model=List[Dict])
+async def get_queries_by_date(date_str: str, current_user=Depends(get_current_user)):
+    """Return queries for a specific date (YYYY-MM-DD)."""
+    try:
+        target_date = datetime.fromisoformat(date_str).date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+
+    start = datetime.combine(target_date, datetime.min.time(), tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+
+    docs = (
+        db.collection("Queries")
+        .document(current_user["id"])
+        .collection("items")
+        .where("timestamp", ">=", start)
+        .where("timestamp", "<", end)
+        .order_by("timestamp", direction=fs.Query.DESCENDING)
+        .stream()
+    )
+    results: List[Dict] = []
+    for doc in docs:
+        data = doc.to_dict()
+        ts = data.get("timestamp")
+        if ts is None:
+            continue
+        if isinstance(ts, datetime):
+            dt = ts.astimezone(timezone.utc)
+        else:
+            dt = getattr(ts, "to_datetime", lambda: ts)().astimezone(timezone.utc)
+        data["timestamp"] = dt.isoformat()
+        results.append(data)
+    return results
 
 @app.get("/")
 async def root():
