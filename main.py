@@ -11,6 +11,8 @@ from langchain_core.messages import HumanMessage, BaseMessage, ToolMessage, AIMe
 from dotenv import load_dotenv
 from pymed import PubMed
 import logging
+from datetime import datetime, timezone
+from firebase_admin import firestore as fs
 from firebase import db
 from utils import hash_password, verify_password, create_access_token, get_current_user
 from langgraph.prebuilt import ToolNode
@@ -156,7 +158,7 @@ class AskRequest(BaseModel):
     query: str
 
 @app.post("/ask")
-async def ask(request: AskRequest, http_request: Request):
+async def ask(request: AskRequest, http_request: Request, current_user=Depends(get_current_user)):
     chat_history_list = http_request.session.get("chat_history", [])
     
     messages = []
@@ -174,6 +176,17 @@ async def ask(request: AskRequest, http_request: Request):
     try:
         final_state = app_graph.invoke(inputs, {"recursion_limit": 15})
         answer = final_state['messages'][-1].content
+
+        # Persist the query for analytics/history
+        try:
+            user_queries = db.collection("Queries").document(current_user["id"]).collection("items")
+            user_queries.add({
+                "query": request.query,
+                "answer": answer,
+                "timestamp": fs.SERVER_TIMESTAMP,
+            })
+        except Exception as firestore_err:
+            logger.error(f"Failed to save query to Firestore: {firestore_err}")
 
         messages.append(AIMessage(content=answer))
         
