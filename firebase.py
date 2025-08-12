@@ -20,16 +20,33 @@ load_dotenv()
 
 import firebase_admin
 from firebase_admin import credentials, firestore
+import json
 
 # Re-use the same Firebase app across hot-reloads / multiple imports.
 if not firebase_admin._apps:
-    # Prefer explicit service-account json if provided, otherwise fall back to
-    # application-default credentials (useful on GCP / Cloud Run etc.)
-    cred_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
-    if cred_path and os.path.exists(cred_path):
-        cred = credentials.Certificate(cred_path)
+    # For Vercel deployment, try to get service account from environment variable first
+    service_account_json = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON")
+    
+    if service_account_json:
+        # Parse the JSON string from environment variable
+        try:
+            service_account_info = json.loads(service_account_json)
+            cred = credentials.Certificate(service_account_info)
+        except json.JSONDecodeError:
+            # Fallback to file path if JSON parsing fails
+            cred_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
+            if cred_path and os.path.exists(cred_path):
+                cred = credentials.Certificate(cred_path)
+            else:
+                cred = credentials.ApplicationDefault()
     else:
-        cred = credentials.ApplicationDefault()
+        # Prefer explicit service-account json if provided, otherwise fall back to
+        # application-default credentials (useful on GCP / Cloud Run etc.)
+        cred_path = os.getenv("FIREBASE_SERVICE_ACCOUNT_PATH")
+        if cred_path and os.path.exists(cred_path):
+            cred = credentials.Certificate(cred_path)
+        else:
+            cred = credentials.ApplicationDefault()
 
     firebase_admin.initialize_app(cred)
 
