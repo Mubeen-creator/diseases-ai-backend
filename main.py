@@ -60,23 +60,46 @@ class AskRequest(BaseModel):
 async def ask(request: AskRequest, http_request: Request, current_user=Depends(get_current_user)):
     # Session management
     session_id = request.session_id or str(uuid.uuid4())
-    chat_history_list = http_request.session.get("chat_history", [])
     
+    # Load chat history from Firestore if session_id is provided
     messages = []
-    for msg in chat_history_list:
-        if msg.get('type') == 'human':
-            messages.append(HumanMessage(content=msg.get('content', '')))
-        elif msg.get('type') == 'ai':
-            messages.append(AIMessage(content=msg.get('content', '')))
+    if request.session_id:
+        try:
+            # Load existing conversation history from Firestore
+            messages_ref = (
+                db.collection("Sessions")
+                .document(current_user["id"])
+                .collection("sessions")
+                .document(session_id)
+                .collection("messages")
+                .order_by("timestamp", direction=fs.Query.ASCENDING)
+            )
+            
+            for doc in messages_ref.stream():
+                msg_data = doc.to_dict()
+                role = msg_data.get("role")
+                content = msg_data.get("content", msg_data.get("query", ""))  # fallback for old format
+                
+                if role == "user":
+                    messages.append(HumanMessage(content=content))
+                elif role == "assistant":
+                    messages.append(AIMessage(content=content))
+                    
+        except Exception as e:
+            logger.warning(f"Could not load session history: {e}")
+            # Continue with empty history if loading fails
 
     logger.info(f"Received query: '{request.query}' with history length: {len(messages)}")
 
+    # Add current user message
     messages.append(HumanMessage(content=request.query))
 
     inputs = {"messages": messages}
     try:
         final_state = app_graph.invoke(inputs, {"recursion_limit": 15})
         answer = final_state['messages'][-1].content
+        
+        # Save to Firestore
         try:
             session_doc_ref = (
                 db.collection("Sessions")
@@ -84,35 +107,47 @@ async def ask(request: AskRequest, http_request: Request, current_user=Depends(g
                 .collection("sessions")
                 .document(session_id)
             )
-            # Ensure a session document exists with metadata
-            session_doc_ref.set({"created": fs.SERVER_TIMESTAMP, "last_activity": fs.SERVER_TIMESTAMP}, merge=True)
+            
+            # Ensure session document exists with metadata
+            session_doc_ref.set({
+                "created": fs.SERVER_TIMESTAMP, 
+                "last_activity": fs.SERVER_TIMESTAMP
+            }, merge=True)
 
-            user_queries = session_doc_ref.collection("messages")
-            user_queries.add({
-                "query": request.query,
-                "answer": answer,
+            messages_collection = session_doc_ref.collection("messages")
+            
+            # Save user message
+            messages_collection.add({
+                "content": request.query,
                 "timestamp": fs.SERVER_TIMESTAMP,
-                "role": "user",  # could be user/assistant
-
+                "role": "user"
             })
+            
+            # Save assistant message
+            messages_collection.add({
+                "content": answer,
+                "timestamp": fs.SERVER_TIMESTAMP,
+                "role": "assistant"
+            })
+            
+            # Update session last activity
+            session_doc_ref.update({"last_activity": fs.SERVER_TIMESTAMP})
+            
         except Exception as firestore_err:
-            logger.error(f"Failed to save query to Firestore: {firestore_err}")
+            logger.error(f"Failed to save messages to Firestore: {firestore_err}")
 
+        # Update messages list for response
         messages.append(AIMessage(content=answer))
-        # save assistant message too
-        user_queries.add({
-                "query": request.query,
-                "answer": answer,
-                "timestamp": fs.SERVER_TIMESTAMP,
-                "role": "assistant",
-            })
-        # update last activity on session doc
-        session_doc_ref.update({"last_activity": fs.SERVER_TIMESTAMP})
         
-        http_request.session["chat_history"] = [{"type": m.type, "content": m.content} for m in messages]
+        # Update HTTP session for immediate access (optional, mainly for debugging)
+        http_request.session["chat_history"] = [
+            {"type": m.type, "content": m.content} for m in messages
+        ]
+        http_request.session["current_session_id"] = session_id
 
         logger.info(f"Generated answer: {answer}")
         return {"answer": answer, "session_id": session_id}
+        
     except Exception as e:
         logger.error(f"Error during agent execution: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -224,6 +259,7 @@ async def get_all_queries(current_user=Depends(get_current_user)):
 
 @app.get("/sessions/{session_id}", response_model=List[Dict])
 async def get_session_messages(session_id: str, current_user=Depends(get_current_user)):
+    """Get all messages for a specific session."""
     coll = (
         db.collection("Sessions")
         .document(current_user["id"])
@@ -242,8 +278,40 @@ async def get_session_messages(session_id: str, current_user=Depends(get_current
             else:
                 dt = getattr(ts, "to_datetime", lambda: ts)().astimezone(timezone.utc)
             d["timestamp"] = dt.isoformat()
+        
+        # Ensure consistent message format
+        if "content" not in d and "query" in d:
+            # Handle legacy format
+            d["content"] = d.get("query", "")
+        
         msgs.append(d)
     return msgs
+
+@app.delete("/sessions/{session_id}")
+async def delete_session(session_id: str, current_user=Depends(get_current_user)):
+    """Delete a specific session and all its messages."""
+    try:
+        session_doc_ref = (
+            db.collection("Sessions")
+            .document(current_user["id"])
+            .collection("sessions")
+            .document(session_id)
+        )
+        
+        # Delete all messages in the session
+        messages_ref = session_doc_ref.collection("messages")
+        messages = messages_ref.stream()
+        
+        for message in messages:
+            message.reference.delete()
+        
+        # Delete the session document itself
+        session_doc_ref.delete()
+        
+        return {"message": "Session deleted successfully"}
+    except Exception as e:
+        logger.error(f"Error deleting session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete session")
 
 @app.get("/queries/{date_str}", response_model=List[Dict])
 async def get_queries_by_date(date_str: str, current_user=Depends(get_current_user)):
