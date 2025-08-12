@@ -3,6 +3,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import HumanMessage, AIMessage
 from dotenv import load_dotenv
+from fastapi.middleware.cors import CORSMiddleware
 import logging
 from datetime import datetime, timezone, timedelta
 import uuid
@@ -26,7 +27,17 @@ app = FastAPI(
     version="2.0.0",
 )
 
+# Session middleware (secure cookies)
 app.add_middleware(SessionMiddleware, secret_key="your-secret-key-goes-here")
+
+# CORS middleware – allow frontend to call the API from the browser
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "*"],  # TODO: tighten in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 workflow = StateGraph(AgentState)
 workflow.add_node("agent", call_model)
