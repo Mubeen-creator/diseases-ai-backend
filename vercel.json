@@ -26,10 +26,5 @@
     "JWT_SECRET_KEY": "@jwt_secret_key",
     "ALGORITHM": "HS256",
     "ACCESS_TOKEN_EXPIRE_MINUTES": "10080"
-  },
-  "functions": {
-    "api/index.py": {
-      "maxDuration": 30
-    }
   }
 }
