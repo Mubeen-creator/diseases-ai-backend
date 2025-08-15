@@ -11,7 +11,7 @@ from firebase_admin import firestore as fs
 from firebase import db
 from utils import hash_password, verify_password, create_access_token, get_current_user
 from pydantic_validations import AskRequest, SignUpRequest, LoginRequest, TokenResponse
-from tools import call_model, AgentState, router
+from tools import call_model, AgentState, router, create_enhanced_workflow, create_standard_enhanced_workflow, comprehensive_search_agent
 from typing import List, Dict
 from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
@@ -46,10 +46,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-workflow = StateGraph(AgentState)
-workflow.add_node("agent", call_model)
-workflow.set_entry_point("agent")
-workflow.add_conditional_edges(
+# Create multiple workflow options
+standard_workflow = StateGraph(AgentState)
+standard_workflow.add_node("agent", call_model)
+standard_workflow.set_entry_point("agent")
+standard_workflow.add_conditional_edges(
     "agent",
     router,
     {
@@ -57,11 +58,19 @@ workflow.add_conditional_edges(
         "end": END
     }
 )
-app_graph = workflow.compile()
+standard_app_graph = standard_workflow.compile()
+
+# Enhanced workflows
+enhanced_app_graph = create_standard_enhanced_workflow()
+comprehensive_app_graph = create_enhanced_workflow()
+
+# Default to comprehensive search for maximum accuracy
+app_graph = comprehensive_app_graph
 
 class AskRequest(BaseModel):
     query: str
     session_id: Optional[str] = Field(None, description="Existing session id; omit to start a new session")
+    search_strategy: Optional[str] = Field("comprehensive", description="Search strategy: 'standard', 'enhanced', or 'comprehensive'")
 
 @app.post("/ask")
 async def ask(request: AskRequest, http_request: Request, current_user=Depends(get_current_user)):
@@ -101,9 +110,17 @@ async def ask(request: AskRequest, http_request: Request, current_user=Depends(g
     # Add current user message
     messages.append(HumanMessage(content=request.query))
 
+    # Choose workflow based on search strategy
+    if request.search_strategy == "standard":
+        selected_graph = standard_app_graph
+    elif request.search_strategy == "enhanced":
+        selected_graph = enhanced_app_graph
+    else:  # comprehensive (default)
+        selected_graph = comprehensive_app_graph
+    
     inputs = {"messages": messages}
     try:
-        final_state = app_graph.invoke(inputs, {"recursion_limit": 15})
+        final_state = selected_graph.invoke(inputs, {"recursion_limit": 15})
         answer = final_state['messages'][-1].content
         
         # Save to Firestore
@@ -362,6 +379,34 @@ async def root():
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "message": "API is running"}
+
+@app.get("/search-strategies")
+async def get_search_strategies():
+    """Get available search strategies and their descriptions"""
+    return {
+        "strategies": {
+            "standard": {
+                "description": "Sequential search: Local DB first, then PubMed if not found",
+                "sources": ["Local Database", "PubMed"],
+                "speed": "Fast",
+                "accuracy": "Good"
+            },
+            "enhanced": {
+                "description": "Intelligent search with potential parallel API calls",
+                "sources": ["Local Database", "PubMed", "WHO API"],
+                "speed": "Medium",
+                "accuracy": "Better"
+            },
+            "comprehensive": {
+                "description": "Parallel search across all sources for maximum accuracy",
+                "sources": ["Local Database", "PubMed", "WHO API"],
+                "speed": "Medium",
+                "accuracy": "Best"
+            }
+        },
+        "default": "comprehensive",
+        "recommendation": "Use 'comprehensive' for the most accurate and complete health information"
+    }
 
 @app.options("/{path:path}")
 async def options_handler(path: str):
