@@ -34,13 +34,15 @@ app.add_middleware(SessionMiddleware, secret_key="your-secret-key-goes-here")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000", 
+        "http://localhost:3000",
+        "https://localhost:3000", 
         "https://*.hf.space",
         "https://*.huggingface.co",
-        "*"  # TODO: tighten in production
+        "https://mubeen788-healtcare-ai.hf.space",
+        "*"  # Allow all origins for now - tighten in production
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -355,6 +357,16 @@ async def get_queries_by_date(date_str: str, current_user=Depends(get_current_us
 @app.get("/")
 async def root():
     return {"message": "Healthcare RAG Application is running."}
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "message": "API is running"}
+
+@app.options("/{path:path}")
+async def options_handler(path: str):
+    """Handle CORS preflight requests"""
+    return {"message": "OK"}
 
 
 
