@@ -33,7 +33,12 @@ app.add_middleware(SessionMiddleware, secret_key="your-secret-key-goes-here")
 # CORS middleware – allow frontend to call the API from the browser
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "*"],  # TODO: tighten in production
+    allow_origins=[
+        "http://localhost:3000", 
+        "https://*.hf.space",
+        "https://*.huggingface.co",
+        "*"  # TODO: tighten in production
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
