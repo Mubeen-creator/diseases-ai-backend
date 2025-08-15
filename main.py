@@ -39,6 +39,8 @@ app.add_middleware(
         "https://*.hf.space",
         "https://*.huggingface.co",
         "https://mubeen788-healtcare-ai.hf.space",
+        "https://disease-ai-frontend.vercel.app",
+        "https://*.vercel.app",  # Allow all Vercel deployments
         "*"  # Allow all origins for now - tighten in production
     ],
     allow_credentials=True,
