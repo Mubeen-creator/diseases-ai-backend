@@ -8,6 +8,7 @@ sdk_version: 4.44.0
 app_file: app.py
 pinned: false
 license: mit
+short_description: AI-powered healthcare question answering system
 ---
 
 # Healthcare RAG API
@@ -38,7 +39,7 @@ A FastAPI-based healthcare question-answering system powered by RAG (Retrieval-A
 Make sure to set the following environment variables in your Hugging Face Space:
 
 - `GOOGLE_API_KEY` - Google Gemini API key
-- `FIREBASE_SERVICE_ACCOUNT_JSON` - Firebase service account JSON (as string)
+- `FIREBASE_SERVICE_ACCOUNT` or `FIREBASE_SERVICE_ACCOUNT_B64` - Firebase service account credentials
 - `JWT_SECRET_KEY` - JWT secret key
 - Other Firebase configuration variables
 
