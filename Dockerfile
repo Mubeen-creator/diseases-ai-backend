@@ -1,18 +1,30 @@
-FROM python:3.9-slim
+# Use Python 3.11 slim image
+FROM python:3.11-slim
 
-WORKDIR /code
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
-COPY requirements.txt /code/requirements.txt
+COPY requirements.txt .
 
-# Install dependencies
-RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY . /code
+COPY . .
 
 # Expose port 7860 (Hugging Face Spaces default)
 EXPOSE 7860
 
-# Run the FastAPI application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "7860"]
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+# Run the application
+CMD ["python", "app.py"]
