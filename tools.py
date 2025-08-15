@@ -122,7 +122,8 @@ def search_who_api(query: str) -> str:
                         'heart disease': ['cardiovascular', 'heart', 'cardiac', 'coronary'],
                         'cancer': ['cancer', 'malignant', 'tumor', 'oncology'],
                         'hiv': ['hiv', 'aids', 'immunodeficiency'],
-                        'mental health': ['mental', 'depression', 'anxiety', 'psychiatric']
+                        'mental health': ['mental', 'depression', 'anxiety', 'psychiatric'],
+                        'hepatitis': ['hepatitis', 'liver', 'viral hepatitis']
                     }
                     
                     # Expand search terms with synonyms
@@ -172,7 +173,8 @@ def search_who_api(query: str) -> str:
             'covid': "COVID-19 is an infectious disease caused by the SARS-CoV-2 virus. WHO declared COVID-19 a pandemic on March 11, 2020. Most people infected with the virus will experience mild to moderate respiratory illness.",
             'heart disease': "Cardiovascular diseases (CVDs) are the leading cause of death globally. WHO estimates that 17.9 million people died from CVDs in 2019, representing 31% of all global deaths.",
             'cancer': "Cancer is a leading cause of death worldwide, accounting for nearly 10 million deaths in 2020. WHO works to reduce cancer burden through prevention, early detection, treatment, and palliative care.",
-            'mental health': "Mental disorders affect one in four people globally. WHO estimates that depression affects 280 million people worldwide and is a leading cause of disability."
+            'mental health': "Mental disorders affect one in four people globally. WHO estimates that depression affects 280 million people worldwide and is a leading cause of disability.",
+            'hepatitis': "Hepatitis is inflammation of the liver. There are 5 main hepatitis viruses: A, B, C, D and E. Hepatitis B and C are the most common causes of deaths, with 1.1 million deaths per year. WHO works to eliminate viral hepatitis as a public health threat by 2030."
         }
         
         # Check if query matches any fact sheet topics
@@ -316,14 +318,21 @@ def extract_disease_name(query: str) -> str:
         'multiple sclerosis': ['multiple sclerosis', 'ms'],
         'crohn': ['crohn', 'inflammatory bowel'],
         'celiac': ['celiac', 'gluten'],
-        'thyroid': ['thyroid', 'hyperthyroid', 'hypothyroid']
+        'thyroid': ['thyroid', 'hyperthyroid', 'hypothyroid'],
+        'hepatitis': ['hepatitis', 'liver inflammation', 'viral hepatitis']
     }
     
-    # Check for disease patterns
+    # Check for disease patterns - prioritize longer matches first
+    matches = []
     for disease, patterns in disease_patterns.items():
         for pattern in patterns:
             if pattern in query_lower:
-                return disease
+                matches.append((disease, len(pattern)))
+    
+    # Return the disease with the longest matching pattern
+    if matches:
+        matches.sort(key=lambda x: x[1], reverse=True)
+        return matches[0][0]
     
     # If no specific disease found, try to extract key medical terms
     medical_terms = []
@@ -394,25 +403,32 @@ def comprehensive_search_agent(state: AgentState):
                 who_info = who_result
         
         # Use the LLM to create a comprehensive, unified answer
-        synthesis_prompt = f"""Based on the following health information sources, provide a comprehensive, accurate answer to the user's question: "{last_user_message}"
+        synthesis_prompt = f"""You are a healthcare AI assistant. The user asked: "{last_user_message}"
+
+This is clearly a health-related question, so you MUST provide a helpful medical answer.
 
 Available Information:
 {f"Local Database: {local_info}" if local_info else ""}
 {f"Research Literature: {pubmed_info}" if pubmed_info else ""}
 {f"Health Organization Data: {who_info}" if who_info else ""}
 
-Instructions:
-1. Provide a direct, helpful answer to the user's question
-2. Combine information from all available sources intelligently
-3. Focus on the most relevant and accurate information
-4. Do NOT mention where the information came from
-5. If asking about symptoms, list them clearly
-6. If asking about causes, explain them clearly  
-7. If asking about treatment, provide general guidance but recommend consulting healthcare professionals
-8. Keep the answer concise but comprehensive
-9. Use a natural, conversational tone
+CRITICAL INSTRUCTIONS:
+1. This is a health question - you MUST answer it with medical information
+2. NEVER say you cannot answer health questions - you are designed to help with health information
+3. Use your medical knowledge to provide accurate information about the condition
+4. Format your response in proper markdown with headers, bullet points, and emphasis
+5. Do NOT mention where the information came from (no source citations)
+6. If asking about types/classifications, list them clearly with descriptions
+7. If asking about symptoms, use bullet points or numbered lists
+8. If asking about causes, explain them clearly
+9. If asking about treatment, provide general guidance but recommend consulting healthcare professionals
+10. Use markdown formatting: **bold** for emphasis, ## for headers, - for bullet points
+11. Keep the answer comprehensive but well-structured
+12. Always end with appropriate medical disclaimer
 
-Answer:"""
+For hepatitis specifically, there are 5 main types: A, B, C, D, and E, each with different transmission methods and characteristics.
+
+Answer in markdown format:"""
 
         # Create a temporary model instance for synthesis
         synthesis_model = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=api_key)

@@ -35,14 +35,15 @@ def test_who_api():
 def test_comprehensive_search():
     """Test the new comprehensive search agent that provides unified answers"""
     print("\n" + "="*60)
-    print("COMPREHENSIVE SEARCH TEST - UNIFIED ANSWERS")
+    print("COMPREHENSIVE SEARCH TEST - UNIFIED MARKDOWN ANSWERS")
     print("="*60)
     
     test_queries = [
+        "how many types there are in hepatitis",
+        "what are the symptoms of hepatitis B?",
         "what are the symptoms of strep throat?",
         "what causes diabetes?",
-        "how is malaria treated?",
-        "what are the symptoms of migraine?"
+        "how is malaria treated?"
     ]
     
     for query in test_queries:
@@ -58,7 +59,8 @@ def test_comprehensive_search():
             
             if result['messages']:
                 answer = result['messages'][0].content
-                print(f"Answer: {answer}")
+                print(f"Answer (Markdown formatted):")
+                print(answer)
             else:
                 print("No answer generated")
                 
